@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GunGame - Multiplayer Zombie Survival</title>
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.1.1/crypto-js.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: monospace;
+        }
+        canvas { display: block; cursor: crosshair; }
+        
+        #lobby {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .lobby-container {
+            text-align: center;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 40px;
+            border-radius: 10px;
+            border: 2px solid #ffd600;
+            box-shadow: 0 0 40px #ffd600;
+            max-width: 500px;
+        }
+        
+        .lobby-title {
+            font-size: 48px;
+            color: #ff1744;
+            margin-bottom: 30px;
+            text-shadow: 0 0 20px #ff1744;
+        }
+        
+        .lobby-section {
+            margin: 25px 0;
+        }
+        
+        .lobby-label {
+            color: #ffd600;
+            font-size: 16px;
+            margin-bottom: 10px;
+            display: block;
+        }
+        
+        input[type="text"] {
+            background: #1a1a2e;
+            border: 2px solid #ffd600;
+            color: #fff;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 14px;
+            width: 200px;
+            margin: 5px;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            box-shadow: 0 0 10px #ffd600;
+        }
+        
+        button {
+            background: #ff1744;
+            color: #fff;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s;
+            font-family: monospace;
+        }
+        
+        button:hover {
+            background: #ff5252;
+            box-shadow: 0 0 15px #ff1744;
+        }
+        
+        button:active {
+            transform: scale(0.95);
+        }
+        
+        .button-secondary {
+            background: #ffd600;
+            color: #000;
+        }
+        
+        .button-secondary:hover {
+            background: #ffed4e;
+            box-shadow: 0 0 15px #ffd600;
+        }
+        
+        .lobby-info {
+            color: #aaa;
+            font-size: 13px;
+            margin-top: 15px;
+            min-height: 20px;
+        }
+        
+        .lobby-info.active {
+            color: #00e676;
+        }
+        
+        #gameContainer {
+            display: none;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #gameContainer.active {
+            display: block;
+        }
+        
+        #playersList {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            border: 2px solid #ffd600;
+            border-radius: 5px;
+            padding: 10px;
+            color: #0f0;
+            font-size: 12px;
+            z-index: 100;
+            min-width: 200px;
+            display: none;
+        }
+        
+        #playersList.active {
+            display: block;
+        }
+        
+        .player-item {
+            padding: 5px;
+            border-bottom: 1px solid #333;
+        }
+        
+        .player-item:last-child {
+            border-bottom: none;
+        }
+        
+        .player-self { color: #00e676; font-weight: bold; }
+        .player-other { color: #0f0; }
+        
+        #waitingRoom {
+            display: none;
+            margin-top: 30px;
+        }
+        
+        #waitingRoom.active {
+            display: block;
+        }
+        
+        .waiting-message {
+            color: #ffd600;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        
+        #startGameBtn {
+            background: linear-gradient(135deg, #00e676, #00c853);
+            font-size: 18px;
+            padding: 15px 40px;
+            box-shadow: 0 0 20px #00e676;
+        }
+        
+        #startGameBtn:hover {
+            background: linear-gradient(135deg, #00ff81, #00e676);
+            box-shadow: 0 0 30px #00e676;
+        }
+        
+        #startGameBtn:disabled {
+            background: #666;
+            opacity: 0.5;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="lobby">
+    <div class="lobby-container">
+        <div class="lobby-title">🎮 GUN GAME 🎮</div>
+        
+        <div id="lobbyForm">
+            <div class="lobby-section">
+                <label class="lobby-label">TVOJE IME:</label>
+                <input type="text" id="playerName" placeholder="Unesite svoje ime" maxlength="20" value="Player">
+            </div>
+            
+            <div class="lobby-section">
+                <label class="lobby-label">KREIRAJ NOVU IGRU:</label>
+                <button id="createBtn" onclick="createGame()">KREIRAJ</button>
+                <div class="lobby-info" id="createInfo"></div>
+            </div>
+            
+            <div class="lobby-section">
+                <label class="lobby-label">PRIKLJUČI SE IGRI:</label>
+                <input type="text" id="roomId" placeholder="Npr: ABC123" maxlength="6" style="text-transform: uppercase; text-align: center; letter-spacing: 2px; font-size: 18px; font-weight: bold;">
+                <button id="joinBtn" class="button-secondary" onclick="joinGame()">PRIKLJUČI</button>
+                <div class="lobby-info" id="joinInfo"></div>
+            </div>
+            
+            <div style="margin-top: 20px; border-top: 1px solid #333; padding-top: 15px; font-size: 11px; color: #666; text-align: center;">
+                📌 <strong style="color: #ffd600;">HOST:</strong> KREIRAJ → podijeli 6-znakasti kod &nbsp;|&nbsp; <strong style="color: #ffd600;">IGRAČ:</strong> unesi kod → PRIKLJUČI
+            </div>
+        </div>
+
+        <div id="gameRoom" style="display:none; text-align:center;">
+            <div id="gameRoomRole" style="display:inline-block; font-size:13px; font-weight:bold; padding:4px 18px; border-radius:20px; margin-bottom:20px;"></div>
+            <div style="margin-bottom:20px;">
+                <div style="color:#555; font-size:11px; letter-spacing:3px; margin-bottom:8px;">ROOM ID</div>
+                <div id="gameRoomCode" style="font-size:38px; font-weight:bold; letter-spacing:8px; color:#00e676; font-family:monospace; background:#0a0a0a; padding:14px 28px; border-radius:8px; display:inline-block; border:1px solid #1a1a1a;"></div>
+                <br>
+                <button onclick="copyToClipboard(shortRoomId)" style="margin-top:10px; background:#0d2b12; color:#00e676; border:1px solid #00e676; padding:7px 18px; border-radius:5px; cursor:pointer; font-size:12px; font-family:monospace; letter-spacing:1px;">📋 KOPIRAJ</button>
+            </div>
+            <div style="color:#ffd600; font-size:12px; font-weight:bold; letter-spacing:2px; margin-bottom:8px;">IGRAČI U SOBI</div>
+            <div id="gameRoomPlayersList" style="background:rgba(0,0,0,0.5); border:1px solid #222; border-radius:8px; padding:14px; margin-bottom:20px; text-align:left; min-height:60px;"></div>
+            <button id="gameRoomStartBtn" onclick="startGameHost()" style="display:none; background:linear-gradient(135deg,#00e676,#00c853); color:#000; border:none; padding:14px 40px; border-radius:6px; font-size:18px; font-weight:bold; cursor:pointer; box-shadow:0 0 20px rgba(0,230,118,0.5); margin-bottom:12px; font-family:monospace;">🚀 POČNI IGRU</button>
+            <div id="gameRoomStatus" style="font-size:12px; color:#555;"></div>
+        </div>
+    </div>
+</div>
+
+<div id="gameContainer">
+    <div id="playersList"></div>
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+// ━━━ PEER.JS NETWORKING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let peer = null;
+let myId = null;
+let shortRoomId = null;
+let myData = { name: 'Player', x: 0, y: 0, health: 100, angle: 0, id: null };
+let connectedPlayers = {};
+let gameActive = false;
+let isHost = false;
+let hostStartedGame = false;
+
+function generateRoomId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let id = '';
+    for (let i = 0; i < 6; i++) {
+        id += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return id;
+}
+
+function roomIdToPeerId(roomId) {
+    // MD5 hasha od room ID-a → determinističan Peer ID
+    return CryptoJS.MD5('gunroom:' + roomId).toString().substring(0, 20);
+}
+
+function initPeer(customRoomId = null) {
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+    if (customRoomId) {
+        shortRoomId = customRoomId;
+        const peerId = roomIdToPeerId(customRoomId);
+        console.log('Inicijalizujem Peer sa room:', customRoomId, '→', peerId);
+        peer = new Peer(peerId);
+    } else {
+        peer = new Peer();
+    }
+    
+    peer.on('open', function(id) {
+        myId = id;
+        myData.id = id;
+        console.log('Peer otvorena:', id);
+    });
+    peer.on('connection', handleNewConnection);
+    peer.on('error', function(err) { 
+        console.error('Peer error:', err);
+    });
+}
+
+function handleNewConnection(conn) {
+    const peerId = conn.peer;
+    if (!connectedPlayers[peerId]) {
+        connectedPlayers[peerId] = {
+            conn: conn,
+            name: 'Unknown',
+            x: 0, y: 0,
+            health: 100,
+            angle: 0,
+            invincible: 0,
+            shootCooldown: 0
+        };
+    } else {
+        connectedPlayers[peerId].conn = conn;
+    }
+    
+    conn.on('open', function() {
+        console.log('Konekcija otvorena sa:', peerId);
+        conn.send({ type: 'playerInfo', data: { name: myData.name, id: myData.id } });
+        if (isHost) updateHostPlayersList();
+    });
+    conn.on('data', function(msg) { handleMessage(msg, peerId); });
+    conn.on('close', function() { delete connectedPlayers[peerId]; updatePlayersList(); if (isHost) updateHostPlayersList(); });
+    conn.on('error', function(err) { console.error('Konekcijska greška:', err); });
+}
+
+function handleMessage(msg, senderId) {
+    if (msg.type === 'playerInfo') {
+        if (connectedPlayers[senderId]) connectedPlayers[senderId].name = msg.data.name;
+        updatePlayersList();
+        updateHostPlayersList();
+    } else if (msg.type === 'gameStart') {
+        gameActive = true;
+        hostStartedGame = true;
+        hideLobby();
+    } else if (msg.type === 'playerUpdate') {
+        if (connectedPlayers[senderId]) {
+            connectedPlayers[senderId].x = msg.data.x;
+            connectedPlayers[senderId].y = msg.data.y;
+            connectedPlayers[senderId].health = msg.data.health;
+            connectedPlayers[senderId].angle = msg.data.angle;
+            connectedPlayers[senderId].shootCooldown = msg.data.shootCooldown;
+            connectedPlayers[senderId].invincible = msg.data.invincible;
+        }
+    } else if (msg.type === 'lobbyUpdate') {
+        if (!isHost) {
+            updateClientPlayersList(msg.data);
+        }
+    } else if (msg.type === 'zombieSync') {
+        // Klijent prima pozicije zombija od hosta
+        if (!isHost) {
+            zombies = msg.data;
+        }
+    } else if (msg.type === 'gameRestart') {
+        if (!isHost) restart();
+    } else if (msg.type === 'zombieHit') {
+        // Host prima informaciju da je klijentov metak pogodio zombija
+        if (isHost) {
+            const zi = zombies.findIndex(z => z.id === msg.id);
+            if (zi >= 0) {
+                zombies[zi].health -= msg.damage;
+                addPop(zombies[zi].x, zombies[zi].y - 20, `-${msg.damage}`, '#ffd600');
+                if (zombies[zi].health <= 0) {
+                    bloodSplats.push({ x: zombies[zi].x, y: zombies[zi].y, rx: 18 + Math.random() * 18, ry: 9 + Math.random() * 12, rot: Math.random() * Math.PI, alpha: 0.65 });
+                    for (let pi = 0; pi < 16; pi++) {
+                        const ang = Math.random() * Math.PI * 2, spd = 2 + Math.random() * 5;
+                        particles.push({ x: zombies[zi].x, y: zombies[zi].y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, life: 30 + Math.random() * 30, maxLife: 60, color: '#c62828', size: 2 + Math.random() * 4 });
+                    }
+                    zombies.splice(zi, 1);
+                    game.score += 10 * game.wave;
+                    game.zombiesKilled++;
+                }
+            }
+        }
+    }
+}
+
+function broadcastPlayerState() {
+    if (!gameActive) return;
+    const msg = {
+        type: 'playerUpdate',
+        data: {
+            x: player.x, y: player.y,
+            health: player.health, angle: player.angle,
+            shootCooldown: player.shootCooldown, invincible: player.invincible
+        }
+    };
+    for (const peerId in connectedPlayers) {
+        if (connectedPlayers[peerId].conn && connectedPlayers[peerId].conn.open) {
+            connectedPlayers[peerId].conn.send(msg);
+        }
+    }
+}
+
+function sendBroadcast(msg) {
+    for (const peerId in connectedPlayers) {
+        if (connectedPlayers[peerId].conn && connectedPlayers[peerId].conn.open) {
+            connectedPlayers[peerId].conn.send(msg);
+        }
+    }
+}
+
+function updatePlayersList() {
+    const list = document.getElementById('playersList');
+    const playerCount = Object.keys(connectedPlayers).length + 1;
+    let html = `<div class="player-item player-self">📍 ${myData.name} (TI)</div>`;
+    for (const peerId in connectedPlayers) {
+        const name = connectedPlayers[peerId].name || 'Unknown';
+        html += `<div class="player-item player-other">👤 ${name}</div>`;
+    }
+    html += `<div class="player-item" style="color: #888; margin-top: 5px;">Igrači: ${playerCount}</div>`;
+    list.innerHTML = html;
+}
+
+function showGameRoom(asHost) {
+    document.getElementById('lobbyForm').style.display = 'none';
+    document.getElementById('gameRoom').style.display = 'block';
+    document.getElementById('gameRoomCode').textContent = shortRoomId || '';
+    const roleEl = document.getElementById('gameRoomRole');
+    if (asHost) {
+        roleEl.textContent = '👑 TI SI HOST';
+        roleEl.style.cssText += '; background:rgba(255,214,0,0.1); color:#ffd600; border:1px solid #ffd600;';
+        document.getElementById('gameRoomStartBtn').style.display = 'block';
+        document.getElementById('gameRoomStatus').textContent = 'Čekaj igrače ili pritisni POČNI IGRU';
+    } else {
+        roleEl.textContent = '🎮 PRIKLJUČEN';
+        roleEl.style.cssText += '; background:rgba(0,230,118,0.1); color:#00e676; border:1px solid #00e676;';
+        document.getElementById('gameRoomStatus').textContent = 'Čekaj da host počne igru...';
+    }
+}
+
+function createGame() {
+    const playerName = document.getElementById('playerName').value || 'Player';
+    myData.name = playerName;
+    shortRoomId = generateRoomId();
+    initPeer(shortRoomId);
+    isHost = true;
+    setTimeout(() => {
+        showGameRoom(true);
+        updateHostPlayersList();
+        console.log('Igra kreirana - Room ID:', shortRoomId);
+    }, 500);
+}
+
+function copyToClipboard(text) {
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => {
+            alert('✓ Room ID kopiran!');
+        }).catch(() => {
+            fallbackCopy(text);
+        });
+    } else {
+        fallbackCopy(text);
+    }
+}
+
+function fallbackCopy(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    alert('✓ Room ID kopiran!');
+}
+
+function joinGame() {
+    const playerName = document.getElementById('playerName').value || 'Player';
+    const inputId = document.getElementById('roomId').value.trim().toUpperCase();
+    
+    if (!inputId) {
+        document.getElementById('joinInfo').textContent = '⚠️ Unesite Room ID!';
+        document.getElementById('joinInfo').style.color = '#ff1744';
+        return;
+    }
+    
+    if (inputId.length !== 6 || !/^[A-Z0-9]{6}$/.test(inputId)) {
+        document.getElementById('joinInfo').textContent = '⚠️ Room ID mora biti 6 karaktera (A-Z, 0-9)!';
+        document.getElementById('joinInfo').style.color = '#ff9800';
+        return;
+    }
+    
+    myData.name = playerName;
+    document.getElementById('joinInfo').textContent = '⏳ Pokušaj konekcije...';
+    document.getElementById('joinInfo').style.color = '#ffd600';
+    
+    // Klijent dobija nasumičan peer ID, ne isti kao host!
+    initPeer();
+    
+    setTimeout(() => {
+        const hostId = roomIdToPeerId(inputId);
+        console.log('Konektujem se na room:', inputId, '→ hostId:', hostId);
+        
+        const conn = peer.connect(hostId, { reliable: true });
+        
+        const timeout = setTimeout(() => {
+            document.getElementById('joinInfo').textContent = '✗ Host nije dostupan (timeout 8s)';
+            document.getElementById('joinInfo').style.color = '#ff1744';
+            console.error('Timeout - host nije dostupan');
+        }, 8000);
+        
+        conn.on('open', function() {
+            clearTimeout(timeout);
+            // Direktno šalje playerInfo — handleNewConnection bi registrovao novi
+            // conn.on('open') koji ne bi proradio jer je veza već otvorena
+            const peerId = conn.peer;
+            connectedPlayers[peerId] = { conn, name: 'Host', x: 0, y: 0, health: 100, angle: 0, invincible: 0, shootCooldown: 0 };
+            conn.send({ type: 'playerInfo', data: { name: myData.name, id: myData.id } });
+            conn.on('data', function(msg) { handleMessage(msg, peerId); });
+            conn.on('close', function() { delete connectedPlayers[peerId]; updatePlayersList(); });
+            conn.on('error', function(err) { console.error('Konekcijska greška:', err); });
+            shortRoomId = inputId;
+            showGameRoom(false);
+            console.log('Uspešna konekcija sa hostom!');
+        });
+        
+        conn.on('error', function(err) {
+            clearTimeout(timeout);
+            console.error('Konekcijska greška:', err);
+            document.getElementById('joinInfo').textContent = '✗ Greška: ' + (err.message || 'Nije moguće povezati se');
+            document.getElementById('joinInfo').style.color = '#ff1744';
+        });
+    }, 500);
+}
+
+function updateHostPlayersList() {
+    const list = document.getElementById('gameRoomPlayersList');
+    if (!list) return;
+    const playerData = [{ name: myData.name, id: myData.id }];
+    let html = `<div style="color:#ffd600; font-weight:bold; padding:6px 0; border-bottom:1px solid #222; margin-bottom:6px;">👑 ${myData.name} <span style="font-size:11px; color:#555;">(HOST)</span></div>`;
+    for (const peerId in connectedPlayers) {
+        const name = connectedPlayers[peerId].name || '...';
+        html += `<div style="color:#0f0; padding:6px 0;">👤 ${name}</div>`;
+        playerData.push({ name, id: peerId });
+    }
+    html += `<div style="color:#444; font-size:11px; padding-top:8px; margin-top:4px; border-top:1px solid #1a1a1a;">Ukupno: ${playerData.length}</div>`;
+    list.innerHTML = html;
+    sendBroadcast({ type: 'lobbyUpdate', data: playerData });
+}
+
+function updateClientPlayersList(players) {
+    const list = document.getElementById('gameRoomPlayersList');
+    if (!list) return;
+    let html = '';
+    players.forEach((p, i) => {
+        const isMe = p.id === myData.id;
+        const isHostP = i === 0;
+        html += `<div style="color:${isMe ? '#00e676' : isHostP ? '#ffd600' : '#0f0'}; padding:6px 0; ${i < players.length-1 ? 'border-bottom:1px solid #1a1a1a;' : ''}">${isHostP ? '👑' : '👤'} ${p.name}${isMe ? ' <span style="font-size:11px; color:#00e676;">(TI)</span>' : isHostP ? ' <span style="font-size:11px; color:#555;">(HOST)</span>' : ''}</div>`;
+    });
+    html += `<div style="color:#444; font-size:11px; padding-top:8px; margin-top:4px; border-top:1px solid #1a1a1a;">Ukupno: ${players.length}</div>`;
+    list.innerHTML = html;
+}
+
+function startGameHost() {
+    if (!isHost) return;
+    startGame();
+}
+
+function startGame() {
+    gameActive = true;
+    hostStartedGame = true;
+    if (isHost) {
+        sendBroadcast({ type: 'gameStart' });
+    }
+    hideLobby();
+    updatePlayersList();
+}
+
+function hideLobby() {
+    document.getElementById('lobby').style.display = 'none';
+    document.getElementById('gameContainer').classList.add('active');
+    document.getElementById('playersList').classList.add('active');
+    initialize();
+}
+
+function drawRemotePlayers() {
+    for (const peerId in connectedPlayers) {
+        const rp = connectedPlayers[peerId];
+        const p = ws(rp.x, rp.y);
+        
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(rp.angle);
+        ctx.save(); ctx.globalAlpha = 0.3; ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(2, 4, 16, 10, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        
+        ctx.fillStyle = rp.invincible > 0 && Math.floor(rp.invincible / 4) % 2 === 0 ? '#aaa' : '#ff6f00';
+        ctx.beginPath(); ctx.roundRect(-14, -14, 28, 28, 6); ctx.fill();
+        
+        ctx.fillStyle = '#1c2833';
+        ctx.beginPath(); ctx.roundRect(4, -4, 22, 8, 2); ctx.fill();
+        ctx.fillStyle = '#2e4053';
+        ctx.beginPath(); ctx.roundRect(-6, -5, 14, 10, 3); ctx.fill();
+        
+        ctx.fillStyle = '#ffb74d';
+        ctx.beginPath(); ctx.arc(2, 0, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        
+        ctx.save();
+        ctx.fillStyle = '#ff6f00';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(rp.name || 'Unknown', p.x, p.y - 40);
+        
+        const bw = 38, bh = 5, bx = p.x - bw / 2, by = p.y - 36;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(bx, by, bw, bh);
+        const ratio = rp.health / 100;
+        ctx.fillStyle = ratio > 0.5 ? '#00e676' : ratio > 0.25 ? '#ffea00' : '#ff1744';
+        ctx.fillRect(bx, by, bw * ratio, bh);
+        ctx.restore();
+    }
+}
+
+function initialize() {
+    resize();
+    if (!peer || isHost) for (let i = 0; i < 5; i++) spawnZombie();
+}
+
+// ━━━ GAME CODE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const game = { score: 0, wave: 1, zombiesKilled: 0, spawnTimer: 0, spawnInterval: 120, waveTimer: 0, running: true };
+const player = { x: 0, y: 0, w: 28, h: 28, speed: 3.5, health: 100, maxHealth: 100, angle: 0, shootCooldown: 0, shootRate: 12, alive: true, invincible: 0 };
+const cam = { x: 0, y: 0 };
+
+function updateCam() {
+    if (!player.alive && spectateTarget && connectedPlayers[spectateTarget]) {
+        const t = connectedPlayers[spectateTarget];
+        cam.x = t.x - canvas.width / 2; cam.y = t.y - canvas.height / 2;
+    } else {
+        cam.x = player.x - canvas.width / 2; cam.y = player.y - canvas.height / 2;
+    }
+}
+
+function cycleSpectate() {
+    const targets = Object.keys(connectedPlayers);
+    if (targets.length === 0) return;
+    const idx = spectateTarget ? targets.indexOf(spectateTarget) : -1;
+    spectateTarget = targets[(idx + 1) % targets.length];
+}
+function ws(wx, wy) { return { x: wx - cam.x, y: wy - cam.y }; }
+
+const keys = {};
+const mouse = { x: 0, y: 0, down: false };
+
+window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if (['arrowup','arrowdown','arrowleft','arrowright',' ','tab'].includes(e.key.toLowerCase())) e.preventDefault();
+    if (e.key.toLowerCase() === 'tab' && !player.alive && peer) cycleSpectate();
+});
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
+canvas.addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+
+let bullets = [], zombies = [], particles = [], bloodSplats = [], damagePops = [];
+let zombieIdCounter = 0;
+let spectateTarget = null;
+
+function shoot() {
+    if (player.shootCooldown > 0) return;
+    const dx = mouse.x - canvas.width / 2, dy = mouse.y - canvas.height / 2;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const spd = 14, nx = dx / d, ny = dy / d;
+    bullets.push({ x: player.x + nx * 20, y: player.y + ny * 20, vx: nx * spd, vy: ny * spd, life: 100, damage: 35 });
+    for (let i = 0; i < 6; i++) {
+        const spread = (Math.random() - 0.5) * 2;
+        particles.push({ x: player.x + nx * 22, y: player.y + ny * 22, vx: nx * (6 + Math.random() * 4) + spread, vy: ny * (6 + Math.random() * 4) + spread, life: 8 + Math.random() * 8, maxLife: 16, color: Math.random() > 0.5 ? '#ffe566' : '#ff9900', size: 2 + Math.random() * 2 });
+    }
+    player.shootCooldown = player.shootRate;
+}
+
+function spawnZombie() {
+    const angle = Math.random() * Math.PI * 2, dist = Math.max(canvas.width, canvas.height) * 0.65 + Math.random() * 200;
+    const spd = 0.3 + Math.random() * 0.2 + (game.wave - 1) * 0.18, hp = 80 + game.wave * 20;
+    zombies.push({ id: zombieIdCounter++, x: player.x + Math.cos(angle) * dist, y: player.y + Math.sin(angle) * dist, w: 26, h: 26, speed: Math.min(spd, 3.5), health: hp, maxHealth: hp, angle: 0, attackCooldown: 0, attackRate: 55, damage: 8 + game.wave, wobble: Math.random() * Math.PI * 2 });
+}
+
+function addPop(wx, wy, text, color) { damagePops.push({ x: wx, y: wy, text, color, life: 45, maxLife: 45, vy: -1.2 }); }
+
+const TILE = 64;
+function drawGround() {
+    ctx.fillStyle = '#16241a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#1c2e20'; ctx.lineWidth = 1;
+    const sx0 = Math.floor(cam.x / TILE) * TILE, sy0 = Math.floor(cam.y / TILE) * TILE;
+    for (let x = sx0; x < cam.x + canvas.width + TILE; x += TILE) {
+        const sx = x - cam.x;
+        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.height); ctx.stroke();
+    }
+    for (let y = sy0; y < cam.y + canvas.height + TILE; y += TILE) {
+        const sy = y - cam.y;
+        ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(canvas.width, sy); ctx.stroke();
+    }
+}
+
+function drawBloodSplats() {
+    for (const s of bloodSplats) {
+        const p = ws(s.x, s.y);
+        ctx.save(); ctx.globalAlpha = s.alpha; ctx.fillStyle = '#6b0000';
+        ctx.beginPath(); ctx.ellipse(p.x, p.y, s.rx, s.ry, s.rot, 0, Math.PI * 2);
+        ctx.fill(); ctx.restore();
+    }
+}
+
+function drawPlayer() {
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(player.angle);
+    ctx.save(); ctx.globalAlpha = 0.3; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(2, 4, 16, 10, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    ctx.fillStyle = player.invincible > 0 && Math.floor(player.invincible / 4) % 2 === 0 ? '#aaa' : '#3a7bd5';
+    ctx.beginPath(); ctx.roundRect(-player.w / 2, -player.h / 2, player.w, player.h, 6); ctx.fill();
+    ctx.fillStyle = '#1c2833'; ctx.beginPath(); ctx.roundRect(4, -4, 22, 8, 2); ctx.fill();
+    ctx.fillStyle = '#2e4053'; ctx.beginPath(); ctx.roundRect(-6, -5, 14, 10, 3); ctx.fill();
+    ctx.fillStyle = '#f0c080'; ctx.beginPath(); ctx.arc(2, 0, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+}
+
+function drawZombies() {
+    for (const z of zombies) {
+        const p = ws(z.x, z.y);
+        z.wobble += 0.18;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(z.angle + Math.sin(z.wobble) * 0.15);
+        ctx.save(); ctx.globalAlpha = 0.25; ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(2, 5, 14, 8, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        ctx.fillStyle = '#2e7d32'; ctx.beginPath(); ctx.roundRect(-z.w / 2, -z.h / 2, z.w, z.h, 5); ctx.fill();
+        ctx.strokeStyle = '#1b5e20'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-5, -4); ctx.lineTo(-2, 4); ctx.moveTo(2, -6); ctx.lineTo(5, 2); ctx.stroke();
+        ctx.fillStyle = '#558b2f'; ctx.beginPath(); ctx.arc(0, -8, 9, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ff1744'; ctx.beginPath(); ctx.arc(-3, -10, 2.5, 0, Math.PI * 2); ctx.arc(3, -10, 2.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#b71c1c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, -6, 3, 0.2, Math.PI - 0.2); ctx.stroke();
+        ctx.restore();
+        const bw = 38, bh = 5, bx = p.x - bw / 2, by = p.y - z.h / 2 - 14;
+        ctx.fillStyle = '#333'; ctx.fillRect(bx, by, bw, bh);
+        const ratio = z.health / z.maxHealth;
+        ctx.fillStyle = ratio > 0.5 ? '#00e676' : ratio > 0.25 ? '#ffea00' : '#ff1744';
+        ctx.fillRect(bx, by, bw * ratio, bh);
+    }
+}
+
+function drawBullets() {
+    for (const b of bullets) {
+        const p = ws(b.x, b.y);
+        ctx.save(); ctx.shadowColor = '#ffd600'; ctx.shadowBlur = 8; ctx.fillStyle = '#fff9c4';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    }
+}
+
+function drawParticles() {
+    for (const p of particles) {
+        const s = ws(p.x, p.y);
+        ctx.save(); ctx.globalAlpha = Math.max(0, p.life / p.maxLife); ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(s.x, s.y, p.size, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    }
+}
+
+function drawPops() {
+    for (const pop of damagePops) {
+        const s = ws(pop.x, pop.y);
+        ctx.save(); ctx.globalAlpha = pop.life / pop.maxLife; ctx.fillStyle = pop.color; ctx.font = 'bold 15px monospace';
+        ctx.textAlign = 'center'; ctx.shadowColor = '#000'; ctx.shadowBlur = 4; ctx.fillText(pop.text, s.x, s.y); ctx.restore();
+    }
+}
+
+function drawHUD() {
+    const pad = 20;
+    const bw = 220, bh = 22, bx = pad, by = canvas.height - pad - bh;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.roundRect(bx - 6, by - 6, bw + 12, bh + 12, 6); ctx.fill();
+    ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 4); ctx.fill();
+    const ratio = player.health / player.maxHealth;
+    ctx.fillStyle = ratio > 0.5 ? '#00c853' : ratio > 0.25 ? '#ffd600' : '#d50000';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw * ratio, bh, 4); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
+    ctx.fillText(`HP  ${Math.ceil(player.health)} / ${player.maxHealth}`, bx + 8, by + 15);
+    
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.roundRect(canvas.width - 170, pad - 8, 154, 34, 6); ctx.fill();
+    ctx.fillStyle = '#ffd600'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'right';
+    ctx.fillText(`${game.score}`, canvas.width - pad, pad + 16);
+    ctx.fillStyle = '#888'; ctx.font = '11px monospace'; ctx.fillText('SCORE', canvas.width - pad, pad + 4);
+    
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.roundRect(canvas.width / 2 - 70, pad - 8, 140, 34, 6); ctx.fill();
+    ctx.fillStyle = '#ff6d00'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(`WAVE  ${game.wave}`, canvas.width / 2, pad + 16);
+    
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.roundRect(pad - 6, pad - 8, 140, 34, 6); ctx.fill();
+    ctx.fillStyle = '#ef9a9a'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'left';
+    ctx.fillText(`ZOMBIES: ${zombies.length}`, pad, pad + 16);
+    
+    if (game.waveTimer < 300) {
+        ctx.save(); ctx.globalAlpha = Math.min(1, (300 - game.waveTimer) / 60);
+        ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.beginPath(); ctx.roundRect(canvas.width / 2 - 150, canvas.height - 68, 300, 36, 6); ctx.fill();
+        ctx.fillStyle = '#ccc'; ctx.font = '13px monospace'; ctx.textAlign = 'center';
+        ctx.fillText('WASD / ↑↓←→  move   •   LMB  shoot', canvas.width / 2, canvas.height - 45);
+        ctx.restore();
+    }
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ff1744'; ctx.font = 'bold 72px monospace'; ctx.textAlign = 'center';
+    ctx.shadowColor = '#ff1744'; ctx.shadowBlur = 20; ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 50); ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff'; ctx.font = '28px monospace';
+    ctx.fillText(`Score: ${game.score}`, canvas.width / 2, canvas.height / 2 + 10);
+    ctx.fillText(`Zombies killed: ${game.zombiesKilled}`, canvas.width / 2, canvas.height / 2 + 50);
+    ctx.fillText(`Wave reached: ${game.wave}`, canvas.width / 2, canvas.height / 2 + 88);
+    ctx.fillStyle = '#ffd600'; ctx.font = 'bold 22px monospace';
+    const blink = Math.floor(Date.now() / 500) % 2 === 0;
+    if (blink) {
+        if (!peer || isHost) {
+            ctx.fillText('Press  R  to restart', canvas.width / 2, canvas.height / 2 + 140);
+        } else {
+            ctx.fillStyle = '#aaa'; ctx.font = 'bold 18px monospace';
+            ctx.fillText('Čekaj da host restartuje igru...', canvas.width / 2, canvas.height / 2 + 140);
+        }
+    }
+}
+
+function overlaps(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax - aw/2 < bx + bw/2 && ax + aw/2 > bx - bw/2 && ay - ah/2 < by + bh/2 && ay + ah/2 > by - bh/2;
+}
+
+function restart() {
+    spectateTarget = null;
+    Object.assign(player, { x:0, y:0, health:100, alive:true, shootCooldown:0, invincible:0 });
+    Object.assign(game, { score:0, wave:1, zombiesKilled:0, spawnTimer:0, spawnInterval:120, waveTimer:0 });
+    bullets = []; zombies = []; particles = []; bloodSplats = []; damagePops = [];
+    if (!peer || isHost) {
+        for (let i = 0; i < 5; i++) spawnZombie();
+        if (peer && isHost) sendBroadcast({ type: 'gameRestart' });
+    }
+}
+
+function update() {
+    if (!player.alive) {
+        // Ulaz u spectate mode u multiplayer-u
+        if (peer) {
+            const targets = Object.keys(connectedPlayers);
+            if (targets.length > 0 && (!spectateTarget || !connectedPlayers[spectateTarget])) {
+                spectateTarget = targets[0];
+            }
+        }
+        // Samo host ili solo igrač mogu restartvati; klijenti čekaju poruku od hosta
+        if (keys['r'] && (!peer || isHost)) restart();
+        // Igrač je mrtav ali igra se nastavlja (zombiji se nastavljaju za ostale igrače)
+    } else {
+        let dx = 0, dy = 0;
+        if (keys['w'] || keys['arrowup']) dy -= 1;
+        if (keys['s'] || keys['arrowdown']) dy += 1;
+        if (keys['a'] || keys['arrowleft']) dx -= 1;
+        if (keys['d'] || keys['arrowright']) dx += 1;
+        if (dx && dy) { dx *= 0.7071; dy *= 0.7071; }
+        player.x += dx * player.speed; player.y += dy * player.speed;
+        
+        const mdx = mouse.x - canvas.width / 2, mdy = mouse.y - canvas.height / 2;
+        player.angle = Math.atan2(mdy, mdx);
+        
+        if (player.shootCooldown > 0) player.shootCooldown--;
+        if (mouse.down) shoot();
+        if (player.invincible > 0) player.invincible--;
+    }
+    updateCam();
+    
+    // Spawn/wave logic — samo host (ili solo igra)
+    if (!peer || isHost) {
+        game.spawnTimer++;
+        if (game.spawnTimer >= game.spawnInterval) {
+            game.spawnTimer = 0;
+            const count = 1 + Math.floor(game.wave / 2);
+            for (let i = 0; i < Math.min(count, 6); i++) spawnZombie();
+        }
+        game.waveTimer++;
+        if (game.waveTimer >= 1800) {
+            game.waveTimer = 0; game.wave++; game.spawnInterval = Math.max(40, game.spawnInterval - 8);
+        }
+    }
+    
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.x += b.vx; b.y += b.vy; b.life--;
+        if (b.life <= 0) bullets.splice(i, 1);
+    }
+    
+    for (let zi = zombies.length - 1; zi >= 0; zi--) {
+        const z = zombies[zi];
+        
+        // Kretanje zombija — samo host, kreće se ka najbližem igraču
+        if (!peer || isHost) {
+            let targetX = player.x, targetY = player.y;
+            let minD2 = (player.x - z.x) ** 2 + (player.y - z.y) ** 2;
+            for (const pid in connectedPlayers) {
+                const cp = connectedPlayers[pid];
+                const d2 = (cp.x - z.x) ** 2 + (cp.y - z.y) ** 2;
+                if (d2 < minD2) { minD2 = d2; targetX = cp.x; targetY = cp.y; }
+            }
+            const ddx = targetX - z.x, ddy = targetY - z.y;
+            const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+            z.angle = Math.atan2(ddy, ddx);
+            if (dist > 18) { z.x += (ddx / dist) * z.speed; z.y += (ddy / dist) * z.speed; }
+        }
+        
+        // Napad na lokalnog igrača — samo ako je živ
+        if (z.attackCooldown > 0) z.attackCooldown--;
+        const pdx = player.x - z.x, pdy = player.y - z.y;
+        const pdist = Math.sqrt(pdx * pdx + pdy * pdy) || 1;
+        if (player.alive && pdist < (player.w / 2 + z.w / 2) + 4) {
+            if (z.attackCooldown <= 0 && player.invincible <= 0) {
+                player.health -= z.damage;
+                player.invincible = 30;
+                z.attackCooldown = z.attackRate;
+                addPop(player.x, player.y - 40, `-${z.damage}`, '#ff1744');
+                if (player.health <= 0) { player.health = 0; player.alive = false; }
+            }
+        }
+        
+        // Metak pogađa zombija
+        for (let bi = bullets.length - 1; bi >= 0; bi--) {
+            const b = bullets[bi];
+            const bd = Math.sqrt((b.x - z.x) ** 2 + (b.y - z.y) ** 2);
+            if (bd < z.w / 2 + 4) {
+                bullets.splice(bi, 1);
+                addPop(z.x, z.y - 20, `-${b.damage}`, '#fff');
+                for (let pi = 0; pi < 10; pi++) {
+                    particles.push({ x: z.x, y: z.y, vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6, life: 25 + Math.random() * 20, maxLife: 45, color: '#b71c1c', size: 2 + Math.random() * 3 });
+                }
+                if (!peer || isHost) {
+                    // Host direktno primjenjuje štetu
+                    z.health -= b.damage;
+                    if (z.health <= 0) {
+                        bloodSplats.push({ x: z.x, y: z.y, rx: 18 + Math.random() * 18, ry: 9 + Math.random() * 12, rot: Math.random() * Math.PI, alpha: 0.65 });
+                        for (let pi = 0; pi < 16; pi++) {
+                            const ang = Math.random() * Math.PI * 2, spd = 2 + Math.random() * 5;
+                            particles.push({ x: z.x, y: z.y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, life: 30 + Math.random() * 30, maxLife: 60, color: '#c62828', size: 2 + Math.random() * 4 });
+                        }
+                        zombies.splice(zi, 1);
+                        game.score += 10 * game.wave;
+                        game.zombiesKilled++;
+                    }
+                } else {
+                    // Klijent šalje hit event hostu
+                    sendBroadcast({ type: 'zombieHit', id: z.id, damage: b.damage });
+                }
+                break;
+            }
+        }
+    }
+    
+    // Host broadcastuje stanje zombija svim klijentima
+    if (isHost && gameActive) {
+        sendBroadcast({ type: 'zombieSync', data: zombies });
+    }
+    
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.vx *= 0.93; p.vy *= 0.93; p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+    
+    for (let i = damagePops.length - 1; i >= 0; i--) {
+        const p = damagePops[i];
+        p.y += p.vy; p.life--;
+        if (p.life <= 0) damagePops.splice(i, 1);
+    }
+    
+    if (bloodSplats.length > 120) bloodSplats.splice(0, bloodSplats.length - 120);
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawGround();
+    drawBloodSplats();
+    drawParticles();
+    drawBullets();
+    drawZombies();
+    drawPlayer();
+    drawRemotePlayers();
+    drawPops();
+    drawHUD();
+    if (!player.alive) {
+        if (peer && spectateTarget && connectedPlayers[spectateTarget]) drawSpectate();
+        else drawGameOver();
+    }
+}
+
+function drawSpectate() {
+    const name = (connectedPlayers[spectateTarget] && connectedPlayers[spectateTarget].name) || 'Igrač';
+    // Crveni okvir
+    ctx.strokeStyle = 'rgba(255,23,68,0.35)'; ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, canvas.width - 10, canvas.height - 10);
+    // Top bar
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, canvas.width, 52);
+    ctx.fillStyle = '#ffd600'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('👁 PRATIŠ: ' + name + '   |   TAB — sledeći igrač', canvas.width / 2, 34);
+    // Bottom: R to restart (host only)
+    if (!peer || isHost) {
+        const blink = Math.floor(Date.now() / 500) % 2 === 0;
+        if (blink) {
+            ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, canvas.height - 44, canvas.width, 44);
+            ctx.fillStyle = '#ff5252'; ctx.font = 'bold 18px monospace';
+            ctx.fillText('R — restartuj igru za sve', canvas.width / 2, canvas.height - 16);
+        }
+    }
+}
+
+function loop() {
+    if (gameActive) {
+        update();
+        broadcastPlayerState();
+    }
+    draw();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
