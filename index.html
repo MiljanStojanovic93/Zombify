@@ -422,6 +422,58 @@
             letter-spacing: 1px;
         }
 
+        /* ── Bot Controls ── */
+        .bot-controls {
+            margin-bottom: 16px;
+        }
+        .bot-controls-label {
+            color: #ce93d8;
+            font-family: var(--mono);
+            font-size: 10px;
+            font-weight: bold;
+            letter-spacing: 3px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        .bot-controls-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+        .bot-count-badge {
+            font-family: var(--mono);
+            font-size: 15px;
+            font-weight: bold;
+            color: #ce93d8;
+            background: rgba(156,39,176,0.12);
+            border: 1px solid rgba(206,147,216,0.25);
+            padding: 6px 18px;
+            border-radius: 8px;
+            min-width: 90px;
+            text-align: center;
+        }
+        .btn-bot {
+            background: rgba(156,39,176,0.15);
+            color: #ce93d8;
+            border: 1px solid rgba(206,147,216,0.35);
+            padding: 8px 20px;
+            border-radius: 8px;
+            font-family: var(--sans);
+            font-size: 17px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-bot:hover:not(:disabled) {
+            background: rgba(156,39,176,0.3);
+            box-shadow: 0 0 14px rgba(206,147,216,0.3);
+        }
+        .btn-bot:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
         /* ── Legacy buttons (keep for JS that uses them) ── */
         button { font-family: var(--mono); cursor: pointer; transition: all 0.2s; }
         #startGameBtn {
@@ -488,6 +540,16 @@
 
             <div class="room-players-label">IGRAČI U SOBI</div>
             <div id="gameRoomPlayersList" class="room-players-list"></div>
+
+            <!-- Bot Controls (host only) -->
+            <div id="botControls" class="bot-controls" style="display:none;">
+                <div class="bot-controls-label">🤖 Botovi</div>
+                <div class="bot-controls-row">
+                    <button id="removeBotBtn" class="btn-bot" onclick="removeBot()" disabled>— Ukloni</button>
+                    <div id="botCountDisplay" class="bot-count-badge">0 / 4</div>
+                    <button id="addBotBtn" class="btn-bot" onclick="addBot()">+ Dodaj</button>
+                </div>
+            </div>
 
             <button id="gameRoomStartBtn" class="btn-start" onclick="startGameHost()" style="display:none;">🚀 POČNI IGRU</button>
             <div id="gameRoomStatus" class="room-status"></div>
@@ -604,6 +666,8 @@ function handleMessage(msg, senderId) {
         if (!isHost) {
             zombies = msg.data;
         }
+    } else if (msg.type === 'botSync') {
+        if (!isHost) remoteBots = msg.data;
     } else if (msg.type === 'gameRestart') {
         if (!isHost) restart();
     } else if (msg.type === 'zombieHit') {
@@ -675,6 +739,7 @@ function showGameRoom(asHost) {
         roleEl.style.cssText += '; background:rgba(255,214,0,0.1); color:#ffd600; border:1px solid #ffd600;';
         document.getElementById('gameRoomStartBtn').style.display = 'block';
         document.getElementById('gameRoomStatus').textContent = 'Čekaj igrače ili pritisni POČNI IGRU';
+        document.getElementById('botControls').style.display = 'block';
     } else {
         roleEl.textContent = '🎮 PRIKLJUČEN';
         roleEl.style.cssText += '; background:rgba(0,230,118,0.1); color:#00e676; border:1px solid #00e676;';
@@ -786,7 +851,10 @@ function updateHostPlayersList() {
         html += `<div style="color:#0f0; padding:6px 0;">👤 ${name}</div>`;
         playerData.push({ name, id: peerId });
     }
-    html += `<div style="color:#444; font-size:11px; padding-top:8px; margin-top:4px; border-top:1px solid #1a1a1a;">Ukupno: ${playerData.length}</div>`;
+    for (const bot of bots) {
+        html += `<div style="color:#ce93d8; padding:6px 0;">🤖 ${bot.name} <span style="font-size:11px; color:#555;">(BOT)</span></div>`;
+    }
+    html += `<div style="color:#444; font-size:11px; padding-top:8px; margin-top:4px; border-top:1px solid #1a1a1a;">Ukupno: ${playerData.length + bots.length}</div>`;
     list.innerHTML = html;
     sendBroadcast({ type: 'lobbyUpdate', data: playerData });
 }
@@ -881,21 +949,33 @@ function resize() {
 resize();
 window.addEventListener('resize', resize);
 
-const game = { score: 0, wave: 1, zombiesKilled: 0, spawnTimer: 0, spawnInterval: 120, waveTimer: 0, running: true };
+const game = { score: 0, wave: 1, zombiesKilled: 0, spawnTimer: 0, spawnInterval: 160, waveTimer: 0, running: true };
 const player = { x: 0, y: 0, w: 28, h: 28, speed: 3.5, health: 100, maxHealth: 100, angle: 0, shootCooldown: 0, shootRate: 12, alive: true, invincible: 0 };
 const cam = { x: 0, y: 0 };
 
-function updateCam() {
-    if (!player.alive && spectateTarget && connectedPlayers[spectateTarget]) {
-        const t = connectedPlayers[spectateTarget];
-        cam.x = t.x - canvas.width / 2; cam.y = t.y - canvas.height / 2;
-    } else {
-        cam.x = player.x - canvas.width / 2; cam.y = player.y - canvas.height / 2;
+function getSpectateData() {
+    if (!spectateTarget) return null;
+    if (spectateTarget.startsWith('bot_')) {
+        const list = (isHost || !peer) ? bots : remoteBots;
+        return list.find(b => b.id === spectateTarget && b.alive) || null;
     }
+    return connectedPlayers[spectateTarget] || null;
+}
+
+function updateCam() {
+    if (!player.alive && spectateTarget) {
+        const t = getSpectateData();
+        if (t) { cam.x = t.x - canvas.width / 2; cam.y = t.y - canvas.height / 2; return; }
+    }
+    cam.x = player.x - canvas.width / 2; cam.y = player.y - canvas.height / 2;
 }
 
 function cycleSpectate() {
-    const targets = Object.keys(connectedPlayers);
+    const botList = (isHost || !peer) ? bots : remoteBots;
+    const targets = [
+        ...Object.keys(connectedPlayers),
+        ...botList.filter(b => b.alive).map(b => b.id)
+    ];
     if (targets.length === 0) return;
     const idx = spectateTarget ? targets.indexOf(spectateTarget) : -1;
     spectateTarget = targets[(idx + 1) % targets.length];
@@ -908,7 +988,7 @@ const mouse = { x: 0, y: 0, down: false };
 window.addEventListener('keydown', e => {
     keys[e.key.toLowerCase()] = true;
     if (['arrowup','arrowdown','arrowleft','arrowright',' ','tab'].includes(e.key.toLowerCase())) e.preventDefault();
-    if (e.key.toLowerCase() === 'tab' && !player.alive && peer) cycleSpectate();
+    if (e.key.toLowerCase() === 'tab' && !player.alive) cycleSpectate();
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
@@ -918,6 +998,237 @@ canvas.addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false
 let bullets = [], zombies = [], particles = [], bloodSplats = [], damagePops = [];
 let zombieIdCounter = 0;
 let spectateTarget = null;
+
+// ─── Bot system ───────────────────────────────────────────────────────────
+let bots = [], botIdCounter = 0, remoteBots = [];
+const BOT_NAMES = ['Terminator', 'RoboKill', 'CyberGuard', 'IronBot'];
+
+function addBot() {
+    if (!isHost || bots.length >= 4) return;
+    const name = BOT_NAMES[bots.length] || `BOT-${bots.length + 1}`;
+    bots.push({
+        id: 'bot_' + (botIdCounter++),
+        name: name,
+        x: (Math.random() - 0.5) * 300,
+        y: (Math.random() - 0.5) * 300,
+        health: 100, maxHealth: 100,
+        angle: 0, speed: 2.4 + Math.random() * 0.4,
+        shootCooldown: 0, shootRate: 20 + Math.floor(Math.random() * 10),
+        invincible: 0, alive: true,
+        w: 28, h: 28, damage: 35,
+        wanderAngle: (Math.random() - 0.5) * 1.6,
+        wanderTimer: Math.floor(Math.random() * 80),
+        accuracy: 0.60 + Math.random() * 0.30   // 60–90% shot accuracy
+    });
+    updateBotDisplay();
+    updateHostPlayersList();
+}
+
+function removeBot() {
+    if (!isHost || bots.length === 0) return;
+    bots.pop();
+    updateBotDisplay();
+    updateHostPlayersList();
+}
+
+function updateBotDisplay() {
+    const display = document.getElementById('botCountDisplay');
+    if (display) display.textContent = `${bots.length} / 4`;
+    const addBtn = document.getElementById('addBotBtn');
+    const removeBtn = document.getElementById('removeBotBtn');
+    if (addBtn) addBtn.disabled = bots.length >= 4;
+    if (removeBtn) removeBtn.disabled = bots.length === 0;
+}
+
+function updateBots() {
+    for (let bi = 0; bi < bots.length; bi++) {
+        const bot = bots[bi];
+        if (!bot.alive) continue;
+
+        if (bot.shootCooldown > 0) bot.shootCooldown--;
+        if (bot.invincible > 0) bot.invincible--;
+        if (bot.wanderTimer > 0) bot.wanderTimer--;
+
+        // Periodically pick a new random wander offset
+        if (bot.wanderTimer <= 0) {
+            bot.wanderAngle = (Math.random() - 0.5) * 2.2;
+            bot.wanderTimer = 50 + Math.floor(Math.random() * 110);
+        }
+
+        // Find nearest zombie to target
+        let nearestZ = null, nearestDist = Infinity;
+        for (const z of zombies) {
+            const d = Math.hypot(z.x - bot.x, z.y - bot.y);
+            if (d < nearestDist) { nearestDist = d; nearestZ = z; }
+        }
+
+        if (nearestZ) {
+            const dx = nearestZ.x - bot.x, dy = nearestZ.y - bot.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            const toAngle = Math.atan2(dy, dx);
+            bot.angle = toAngle;
+
+            // Wander offset fades when zombie is very close
+            const wanderScale = Math.min(1, dist / 220);
+            const moveAngle = toAngle + bot.wanderAngle * wanderScale;
+
+            if (dist > 130) {
+                // Approach with lateral drift
+                bot.x += Math.cos(moveAngle) * bot.speed;
+                bot.y += Math.sin(moveAngle) * bot.speed;
+            } else {
+                // Strafe sideways around zombie when close
+                const strafeDir = Math.sign(bot.wanderAngle) || 1;
+                const strafeAngle = toAngle + (Math.PI / 2) * strafeDir;
+                bot.x += Math.cos(strafeAngle) * bot.speed * 0.65;
+                bot.y += Math.sin(strafeAngle) * bot.speed * 0.65;
+            }
+
+            // Shoot with inaccuracy spread
+            if (bot.shootCooldown <= 0 && dist < 520) {
+                // Skip the shot occasionally based on accuracy
+                if (Math.random() < bot.accuracy + 0.08) {
+                    const spread = (1.0 - bot.accuracy) * 1.6;
+                    const missAngle = (Math.random() - 0.5) * spread;
+                    const shootAngle = toAngle + missAngle;
+                    const nx = Math.cos(shootAngle), ny = Math.sin(shootAngle);
+                    bullets.push({
+                        x: bot.x + nx * 20, y: bot.y + ny * 20,
+                        vx: nx * 14, vy: ny * 14,
+                        life: 100, damage: bot.damage
+                    });
+                }
+                bot.shootCooldown = bot.shootRate + Math.floor(Math.random() * 16);
+            }
+        }
+
+        // Zombies damage bots
+        for (const z of zombies) {
+            if (z.attackCooldown > 0) continue;
+            const d = Math.hypot(z.x - bot.x, z.y - bot.y);
+            if (d < (bot.w / 2 + z.w / 2) + 4 && bot.invincible <= 0) {
+                bot.health -= z.damage;
+                bot.invincible = 30;
+                addPop(bot.x, bot.y - 40, `-${z.damage}`, '#ce93d8');
+                if (bot.health <= 0) { bot.health = 0; bot.alive = false; }
+            }
+        }
+    }
+
+    // Broadcast bot states to clients
+    if (gameActive) sendBroadcast({ type: 'botSync', data: bots });
+}
+
+function drawOffscreenIndicators() {
+    const margin = 38;
+    const cw = canvas.width, ch = canvas.height;
+    const entities = [];
+
+    for (const peerId in connectedPlayers) {
+        const rp = connectedPlayers[peerId];
+        entities.push({ x: rp.x, y: rp.y, name: rp.name || 'Player', color: '#ff6f00' });
+    }
+    const botsToDraw = (isHost || !peer) ? bots : remoteBots;
+    for (const bot of botsToDraw) {
+        if (!bot.alive) continue;
+        entities.push({ x: bot.x, y: bot.y, name: bot.name, color: '#ce93d8' });
+    }
+
+    for (const ent of entities) {
+        const sp = ws(ent.x, ent.y);
+        // Skip if already visible on screen
+        if (sp.x >= margin && sp.x <= cw - margin && sp.y >= margin && sp.y <= ch - margin) continue;
+
+        // Angle from screen center to entity
+        const dx = sp.x - cw / 2, dy = sp.y - ch / 2;
+        const angle = Math.atan2(dy, dx);
+        const ndx = Math.cos(angle), ndy = Math.sin(angle);
+        const halfW = cw / 2 - margin, halfH = ch / 2 - margin;
+
+        // Find intersection with screen edge rectangle
+        const ax = Math.abs(ndx), ay = Math.abs(ndy);
+        const t = (ax < 1e-9) ? halfH / ay : (ay < 1e-9) ? halfW / ax : Math.min(halfW / ax, halfH / ay);
+        const ex = cw / 2 + ndx * t;
+        const ey = ch / 2 + ndy * t;
+
+        // Distance label
+        const worldDist = Math.hypot(ent.x - (player.x), ent.y - (player.y));
+        const distLabel = worldDist > 9999 ? '' : Math.round(worldDist) + 'm';
+
+        ctx.save();
+        ctx.translate(ex, ey);
+        ctx.globalAlpha = 0.88;
+
+        // Arrow pointing toward entity
+        ctx.rotate(angle);
+        ctx.fillStyle = ent.color;
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(15, 0);
+        ctx.lineTo(-9, -9);
+        ctx.lineTo(-5, 0);
+        ctx.lineTo(-9, 9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.rotate(-angle);
+
+        // Name + distance
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 5;
+        ctx.fillText(ent.name, 0, -18);
+        if (distLabel) {
+            ctx.fillStyle = ent.color;
+            ctx.font = '9px monospace';
+            ctx.fillText(distLabel, 0, -7);
+        }
+        ctx.restore();
+    }
+}
+
+function drawBots() {
+    const botsToDraw = (isHost || !peer) ? bots : remoteBots;
+    for (const bot of botsToDraw) {
+        if (!bot.alive) continue;
+        const p = ws(bot.x, bot.y);
+
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(bot.angle);
+
+        ctx.save(); ctx.globalAlpha = 0.3; ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(2, 4, 16, 10, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+
+        ctx.fillStyle = bot.invincible > 0 && Math.floor(bot.invincible / 4) % 2 === 0 ? '#aaa' : '#9c27b0';
+        ctx.beginPath(); ctx.roundRect(-14, -14, 28, 28, 6); ctx.fill();
+
+        ctx.fillStyle = '#1c2833';
+        ctx.beginPath(); ctx.roundRect(4, -4, 22, 8, 2); ctx.fill();
+        ctx.fillStyle = '#2e4053';
+        ctx.beginPath(); ctx.roundRect(-6, -5, 14, 10, 3); ctx.fill();
+
+        ctx.fillStyle = '#ce93d8';
+        ctx.beginPath(); ctx.arc(2, 0, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = '#ce93d8';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('🤖 ' + bot.name, p.x, p.y - 40);
+
+        const bw = 38, bh = 5, bx = p.x - bw / 2, by = p.y - 36;
+        ctx.fillStyle = '#333'; ctx.fillRect(bx, by, bw, bh);
+        const ratio = bot.health / bot.maxHealth;
+        ctx.fillStyle = ratio > 0.5 ? '#00e676' : ratio > 0.25 ? '#ffea00' : '#ff1744';
+        ctx.fillRect(bx, by, bw * ratio, bh);
+        ctx.restore();
+    }
+}
 
 function shoot() {
     if (player.shootCooldown > 0) return;
@@ -934,8 +1245,9 @@ function shoot() {
 
 function spawnZombie() {
     const angle = Math.random() * Math.PI * 2, dist = Math.max(canvas.width, canvas.height) * 0.65 + Math.random() * 200;
-    const spd = 0.3 + Math.random() * 0.2 + (game.wave - 1) * 0.18, hp = 80 + game.wave * 20;
-    zombies.push({ id: zombieIdCounter++, x: player.x + Math.cos(angle) * dist, y: player.y + Math.sin(angle) * dist, w: 26, h: 26, speed: Math.min(spd, 3.5), health: hp, maxHealth: hp, angle: 0, attackCooldown: 0, attackRate: 55, damage: 8 + game.wave, wobble: Math.random() * Math.PI * 2 });
+    const spawnWave = game.wave;
+    const spd = 0.22 + Math.random() * 0.18 + (spawnWave - 1) * 0.32, hp = 80 + spawnWave * 20;
+    zombies.push({ id: zombieIdCounter++, x: player.x + Math.cos(angle) * dist, y: player.y + Math.sin(angle) * dist, w: 26, h: 26, speed: Math.min(spd, 3.8), health: hp, maxHealth: hp, angle: 0, attackCooldown: 0, attackRate: 55, damage: 8 + spawnWave, wobble: Math.random() * Math.PI * 2 });
 }
 
 function addPop(wx, wy, text, color) { damagePops.push({ x: wx, y: wy, text, color, life: 45, maxLife: 45, vy: -1.2 }); }
@@ -1081,22 +1393,33 @@ function overlaps(ax, ay, aw, ah, bx, by, bw, bh) {
 function restart() {
     spectateTarget = null;
     Object.assign(player, { x:0, y:0, health:100, alive:true, shootCooldown:0, invincible:0 });
-    Object.assign(game, { score:0, wave:1, zombiesKilled:0, spawnTimer:0, spawnInterval:120, waveTimer:0 });
+    Object.assign(game, { score:0, wave:1, zombiesKilled:0, spawnTimer:0, spawnInterval:160, waveTimer:0 });
     bullets = []; zombies = []; particles = []; bloodSplats = []; damagePops = [];
     if (!peer || isHost) {
         for (let i = 0; i < 5; i++) spawnZombie();
         if (peer && isHost) sendBroadcast({ type: 'gameRestart' });
     }
+    remoteBots = [];
+    for (const bot of bots) {
+        Object.assign(bot, {
+            x: (Math.random() - 0.5) * 300,
+            y: (Math.random() - 0.5) * 300,
+            health: 100, alive: true,
+            shootCooldown: 0, invincible: 0
+        });
+    }
 }
 
 function update() {
     if (!player.alive) {
-        // Ulaz u spectate mode u multiplayer-u
-        if (peer) {
-            const targets = Object.keys(connectedPlayers);
-            if (targets.length > 0 && (!spectateTarget || !connectedPlayers[spectateTarget])) {
-                spectateTarget = targets[0];
-            }
+        // Auto-assign first available spectate target (player or bot)
+        const botList = (isHost || !peer) ? bots : remoteBots;
+        const allTargets = [
+            ...Object.keys(connectedPlayers),
+            ...botList.filter(b => b.alive).map(b => b.id)
+        ];
+        if (allTargets.length > 0 && (!spectateTarget || !getSpectateData())) {
+            spectateTarget = allTargets[0];
         }
         // Samo host ili solo igrač mogu restartvati; klijenti čekaju poruku od hosta
         if (keys['r'] && (!peer || isHost)) restart();
@@ -1128,8 +1451,8 @@ function update() {
             for (let i = 0; i < Math.min(count, 6); i++) spawnZombie();
         }
         game.waveTimer++;
-        if (game.waveTimer >= 1800) {
-            game.waveTimer = 0; game.wave++; game.spawnInterval = Math.max(40, game.spawnInterval - 8);
+        if (game.waveTimer >= 3000) {
+            game.waveTimer = 0; game.wave++; game.spawnInterval = Math.max(50, game.spawnInterval - 8);
         }
     }
     
@@ -1142,19 +1465,36 @@ function update() {
     for (let zi = zombies.length - 1; zi >= 0; zi--) {
         const z = zombies[zi];
         
-        // Kretanje zombija — samo host, kreće se ka najbližem igraču
+        // Kretanje zombija — samo host, kreće se ka najbližem živom igraču/botu
         if (!peer || isHost) {
-            let targetX = player.x, targetY = player.y;
-            let minD2 = (player.x - z.x) ** 2 + (player.y - z.y) ** 2;
+            let targetX = null, targetY = null, minD2 = Infinity;
+
+            // Lokalni igrač (samo ako je živ)
+            if (player.alive) {
+                const d2 = (player.x - z.x) ** 2 + (player.y - z.y) ** 2;
+                if (d2 < minD2) { minD2 = d2; targetX = player.x; targetY = player.y; }
+            }
+            // Remote igrači (samo ako im je health > 0)
             for (const pid in connectedPlayers) {
                 const cp = connectedPlayers[pid];
+                if (cp.health <= 0) continue;
                 const d2 = (cp.x - z.x) ** 2 + (cp.y - z.y) ** 2;
                 if (d2 < minD2) { minD2 = d2; targetX = cp.x; targetY = cp.y; }
             }
-            const ddx = targetX - z.x, ddy = targetY - z.y;
-            const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
-            z.angle = Math.atan2(ddy, ddx);
-            if (dist > 18) { z.x += (ddx / dist) * z.speed; z.y += (ddy / dist) * z.speed; }
+            // Botovi (samo živi)
+            for (const bot of bots) {
+                if (!bot.alive) continue;
+                const d2 = (bot.x - z.x) ** 2 + (bot.y - z.y) ** 2;
+                if (d2 < minD2) { minD2 = d2; targetX = bot.x; targetY = bot.y; }
+            }
+
+            // Pomjeri zombija samo ako postoji živa meta
+            if (targetX !== null) {
+                const ddx = targetX - z.x, ddy = targetY - z.y;
+                const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+                z.angle = Math.atan2(ddy, ddx);
+                if (dist > 18) { z.x += (ddx / dist) * z.speed; z.y += (ddy / dist) * z.speed; }
+            }
         }
         
         // Napad na lokalnog igrača — samo ako je živ
@@ -1207,6 +1547,9 @@ function update() {
     if (isHost && gameActive) {
         sendBroadcast({ type: 'zombieSync', data: zombies });
     }
+
+    // Update bots (host/solo only)
+    if (!peer || isHost) updateBots();
     
     for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
@@ -1232,24 +1575,30 @@ function draw() {
     drawZombies();
     drawPlayer();
     drawRemotePlayers();
+    drawBots();
     drawPops();
     drawHUD();
+    drawOffscreenIndicators();
     if (!player.alive) {
-        if (peer && spectateTarget && connectedPlayers[spectateTarget]) drawSpectate();
+        if (spectateTarget && getSpectateData()) drawSpectate();
         else drawGameOver();
     }
 }
 
 function drawSpectate() {
-    const name = (connectedPlayers[spectateTarget] && connectedPlayers[spectateTarget].name) || 'Igrač';
-    // Crveni okvir
-    ctx.strokeStyle = 'rgba(255,23,68,0.35)'; ctx.lineWidth = 10;
+    const ent = getSpectateData();
+    const isBot = spectateTarget && spectateTarget.startsWith('bot_');
+    const name = ent ? (ent.name || 'Igrač') : '?';
+    const labelColor = isBot ? '#ce93d8' : '#ffd600';
+    const prefix = isBot ? '🤖 ' : '👤 ';
+    // Okvir
+    ctx.strokeStyle = isBot ? 'rgba(206,147,216,0.35)' : 'rgba(255,23,68,0.35)'; ctx.lineWidth = 10;
     ctx.strokeRect(5, 5, canvas.width - 10, canvas.height - 10);
     // Top bar
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.fillRect(0, 0, canvas.width, 52);
-    ctx.fillStyle = '#ffd600'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
-    ctx.fillText('👁 PRATIŠ: ' + name + '   |   TAB — sledeći igrač', canvas.width / 2, 34);
+    ctx.fillStyle = labelColor; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('👁 PRATIŠ: ' + prefix + name + '   |   TAB — sledeći', canvas.width / 2, 34);
     // Bottom: R to restart (host only)
     if (!peer || isHost) {
         const blink = Math.floor(Date.now() / 500) % 2 === 0;
