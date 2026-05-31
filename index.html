@@ -588,29 +588,79 @@ function roomIdToPeerId(roomId) {
     return CryptoJS.MD5('gunroom:' + roomId).toString().substring(0, 20);
 }
 
-function initPeer(customRoomId = null) {
-    if (peer) {
-        peer.destroy();
-        peer = null;
-    }
+function initPeer(customRoomId = null, onOpen = null) {
+    if (peer) { peer.destroy(); peer = null; }
+
+    const peerOptions = {
+        host: '0.peerjs.com',
+        port: 443,
+        path: '/',
+        secure: true,
+        debug: 0,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+            ]
+        }
+    };
+
     if (customRoomId) {
         shortRoomId = customRoomId;
         const peerId = roomIdToPeerId(customRoomId);
         console.log('Inicijalizujem Peer sa room:', customRoomId, '→', peerId);
-        peer = new Peer(peerId);
+        peer = new Peer(peerId, peerOptions);
     } else {
-        peer = new Peer();
+        peer = new Peer(peerOptions);
     }
-    
+
     peer.on('open', function(id) {
         myId = id;
         myData.id = id;
         console.log('Peer otvorena:', id);
+        if (onOpen) onOpen(id);
     });
     peer.on('connection', handleNewConnection);
-    peer.on('error', function(err) { 
-        console.error('Peer error:', err);
+    peer.on('error', function(err) {
+        console.error('Peer error:', err.type, err);
+        handlePeerError(err);
     });
+}
+
+function handlePeerError(err) {
+    const createBtn = document.getElementById('createBtn');
+    const joinBtn   = document.getElementById('joinBtn');
+    const createInfo = document.getElementById('createInfo');
+    const joinInfo   = document.getElementById('joinInfo');
+
+    // Re-enable buttons
+    if (createBtn) { createBtn.disabled = false; createBtn.textContent = '⚔ KREIRAJ'; }
+    if (joinBtn)   { joinBtn.disabled   = false; joinBtn.textContent   = '→ PRIKLJUČI'; }
+
+    const typeMap = {
+        'unavailable-id'  : '⚠️ Room ID je zauzet — pokušaj ponovo',
+        'invalid-id'      : '⚠️ Neispravan ID sobe',
+        'network'         : '✕ Mrežna greška — provjeri internet konekciju',
+        'peer-unavailable': '✕ Host nije pronađen',
+        'ssl-unavailable' : '✕ SSL greška — pokušaj reload stranice',
+        'server-error'    : '✕ Server nedostupan — pokušaj za nekoliko sekundi',
+        'socket-error'    : '✕ Socket greška — provjeri internet',
+        'socket-closed'   : '✕ Veza prekinuta — pokušaj ponovo',
+    };
+    const msg = typeMap[err.type] || ('✕ Greška: ' + (err.type || err.message || 'nepoznata'));
+
+    if (createInfo) { createInfo.textContent = msg; createInfo.style.color = '#ff1744'; }
+    if (joinInfo)   { joinInfo.textContent   = msg; joinInfo.style.color   = '#ff1744'; }
+
+    // If unavailable-id while creating, auto-retry with a new room code
+    if (err.type === 'unavailable-id' && isHost) {
+        isHost = false;
+        if (createInfo) createInfo.textContent = '↻ Room ID zauzet — generisem novi...';
+        setTimeout(() => createGame(), 600);
+    }
+
+    if (err.type !== 'unavailable-id') { isHost = false; shortRoomId = null; }
 }
 
 function handleNewConnection(conn) {
@@ -751,13 +801,23 @@ function createGame() {
     const playerName = document.getElementById('playerName').value || 'Player';
     myData.name = playerName;
     shortRoomId = generateRoomId();
-    initPeer(shortRoomId);
     isHost = true;
-    setTimeout(() => {
+
+    const createBtn  = document.getElementById('createBtn');
+    const createInfo = document.getElementById('createInfo');
+    createBtn.disabled = true;
+    createBtn.textContent = '⏳ KREIRANJE...';
+    createInfo.textContent = '⏳ Spajanje na server...';
+    createInfo.style.color = '#ffd600';
+
+    initPeer(shortRoomId, function() {
+        createBtn.disabled = false;
+        createBtn.textContent = '⚔ KREIRAJ';
+        createInfo.textContent = '';
         showGameRoom(true);
         updateHostPlayersList();
         console.log('Igra kreirana - Room ID:', shortRoomId);
-    }, 500);
+    });
 }
 
 function copyToClipboard(text) {
@@ -799,28 +859,33 @@ function joinGame() {
     }
     
     myData.name = playerName;
-    document.getElementById('joinInfo').textContent = '⏳ Pokušaj konekcije...';
+    document.getElementById('joinInfo').textContent = '⏳ Spajanje na server...';
     document.getElementById('joinInfo').style.color = '#ffd600';
-    
+
+    const joinBtn = document.getElementById('joinBtn');
+    joinBtn.disabled = true;
+    joinBtn.textContent = '⏳ SPAJANJE...';
+
     // Klijent dobija nasumičan peer ID, ne isti kao host!
-    initPeer();
-    
-    setTimeout(() => {
+    initPeer(null, function() {
         const hostId = roomIdToPeerId(inputId);
         console.log('Konektujem se na room:', inputId, '→ hostId:', hostId);
-        
+        document.getElementById('joinInfo').textContent = '⏳ Tražim host...';
+
         const conn = peer.connect(hostId, { reliable: true });
-        
+
         const timeout = setTimeout(() => {
+            joinBtn.disabled = false;
+            joinBtn.textContent = '→ PRIKLJUČI';
             document.getElementById('joinInfo').textContent = '✗ Host nije dostupan (timeout 8s)';
             document.getElementById('joinInfo').style.color = '#ff1744';
             console.error('Timeout - host nije dostupan');
         }, 8000);
-        
+
         conn.on('open', function() {
             clearTimeout(timeout);
-            // Direktno šalje playerInfo — handleNewConnection bi registrovao novi
-            // conn.on('open') koji ne bi proradio jer je veza već otvorena
+            joinBtn.disabled = false;
+            joinBtn.textContent = '→ PRIKLJUČI';
             const peerId = conn.peer;
             connectedPlayers[peerId] = { conn, name: 'Host', x: 0, y: 0, health: 100, angle: 0, invincible: 0, shootCooldown: 0 };
             conn.send({ type: 'playerInfo', data: { name: myData.name, id: myData.id } });
@@ -829,16 +894,18 @@ function joinGame() {
             conn.on('error', function(err) { console.error('Konekcijska greška:', err); });
             shortRoomId = inputId;
             showGameRoom(false);
-            console.log('Uspešna konekcija sa hostom!');
+            console.log('Uspješna konekcija sa hostom!');
         });
-        
+
         conn.on('error', function(err) {
             clearTimeout(timeout);
+            joinBtn.disabled = false;
+            joinBtn.textContent = '→ PRIKLJUČI';
             console.error('Konekcijska greška:', err);
             document.getElementById('joinInfo').textContent = '✗ Greška: ' + (err.message || 'Nije moguće povezati se');
             document.getElementById('joinInfo').style.color = '#ff1744';
         });
-    }, 500);
+    });
 }
 
 function updateHostPlayersList() {
