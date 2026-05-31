@@ -573,6 +573,7 @@ let connectedPlayers = {};
 let gameActive = false;
 let isHost = false;
 let hostStartedGame = false;
+let joinConnectTimeout = null;
 
 function generateRoomId() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -602,6 +603,22 @@ function initPeer(customRoomId = null, onOpen = null) {
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
                 { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:openrelay.metered.ca:80' },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
         }
     };
@@ -633,6 +650,9 @@ function handlePeerError(err) {
     const joinBtn   = document.getElementById('joinBtn');
     const createInfo = document.getElementById('createInfo');
     const joinInfo   = document.getElementById('joinInfo');
+
+    // Clear any pending join timeout to avoid double error messages
+    clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
 
     // Re-enable buttons
     if (createBtn) { createBtn.disabled = false; createBtn.textContent = '⚔ KREIRAJ'; }
@@ -874,16 +894,17 @@ function joinGame() {
 
         const conn = peer.connect(hostId, { reliable: true });
 
-        const timeout = setTimeout(() => {
+        joinConnectTimeout = setTimeout(() => {
+            joinConnectTimeout = null;
             joinBtn.disabled = false;
             joinBtn.textContent = '→ PRIKLJUČI';
-            document.getElementById('joinInfo').textContent = '✗ Host nije dostupan (timeout 8s)';
+            document.getElementById('joinInfo').textContent = '✗ Host nije dostupan — provjeri da li je host aktivan i kod ispravan';
             document.getElementById('joinInfo').style.color = '#ff1744';
             console.error('Timeout - host nije dostupan');
-        }, 8000);
+        }, 15000);
 
         conn.on('open', function() {
-            clearTimeout(timeout);
+            clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
             joinBtn.disabled = false;
             joinBtn.textContent = '→ PRIKLJUČI';
             const peerId = conn.peer;
@@ -898,7 +919,7 @@ function joinGame() {
         });
 
         conn.on('error', function(err) {
-            clearTimeout(timeout);
+            clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
             joinBtn.disabled = false;
             joinBtn.textContent = '→ PRIKLJUČI';
             console.error('Konekcijska greška:', err);
