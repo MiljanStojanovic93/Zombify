@@ -4,8 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GunGame - Multiplayer Zombie Survival</title>
-    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.1.1/crypto-js.min.js"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
     <style>
@@ -564,149 +563,253 @@
 </div>
 
 <script>
-// ━━━ PEER.JS NETWORKING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-let peer = null;
-let myId = null;
+// ━━━ MQTT + WebRTC NETWORKING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+const ICE_CFG = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    ]
+};
+
+let mqttClient = null;
+let netActive = false;    // true once multiplayer session started
+let myPeerId = null;
 let shortRoomId = null;
 let myData = { name: 'Player', x: 0, y: 0, health: 100, angle: 0, id: null };
-let connectedPlayers = {};
+let connectedPlayers = {};   // id → { name, x, y, health, angle, invincible, shootCooldown, channel, rtc }
 let gameActive = false;
 let isHost = false;
 let hostStartedGame = false;
 let joinConnectTimeout = null;
 
-function generateRoomId() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let id = '';
-    for (let i = 0; i < 6; i++) {
-        id += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return id;
+function generateId(len) {
+    const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let s = '';
+    for (let i = 0; i < len; i++) s += c[Math.floor(Math.random() * c.length)];
+    return s;
 }
 
-function roomIdToPeerId(roomId) {
-    // MD5 hasha od room ID-a → determinističan Peer ID
-    return CryptoJS.MD5('gunroom:' + roomId).toString().substring(0, 20);
+// ── MQTT helpers ──────────────────────────────────────────────────────────
+
+function mqttConnect(onReady, onFail) {
+    if (mqttClient) { try { mqttClient.end(true); } catch(e){} mqttClient = null; }
+    const cid = 'gg_' + Math.random().toString(36).slice(2, 12);
+    mqttClient = mqtt.connect(MQTT_BROKER, {
+        clientId: cid, keepalive: 30,
+        connectTimeout: 10000, reconnectPeriod: 0
+    });
+    let connected = false;
+    mqttClient.on('connect', () => { connected = true; onReady(); });
+    mqttClient.on('error',   err => { console.error('MQTT error:', err); if (!connected && onFail) onFail(err); });
 }
 
-function initPeer(customRoomId = null, onOpen = null) {
-    if (peer) { peer.destroy(); peer = null; }
+function mqttSub(topic)       { if (mqttClient?.connected) mqttClient.subscribe(topic); }
+function mqttPub(topic, data) { if (mqttClient?.connected) mqttClient.publish(topic, JSON.stringify(data)); }
 
-    const peerOptions = {
-        host: '0.peerjs.com',
-        port: 443,
-        path: '/',
-        secure: true,
-        debug: 0,
-        config: {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:openrelay.metered.ca:80' },
-                {
-                    urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                }
-            ]
+// ── WebRTC helpers ────────────────────────────────────────────────────────
+
+function makeRTC(remoteId, amInitiator) {
+    const rtc = new RTCPeerConnection(ICE_CFG);
+    rtc.onicecandidate = e => {
+        if (!e.candidate) return;
+        const dir = amInitiator ? 'c2h' : 'h2c';
+        mqttPub(`gg/${shortRoomId}/ice/${dir}/${remoteId}`, e.candidate.toJSON());
+    };
+    rtc.onconnectionstatechange = () => {
+        if (rtc.connectionState === 'failed' || rtc.connectionState === 'closed') {
+            if (connectedPlayers[remoteId]) {
+                delete connectedPlayers[remoteId];
+                updatePlayersList();
+                if (isHost) updateHostPlayersList();
+            }
         }
     };
-
-    if (customRoomId) {
-        shortRoomId = customRoomId;
-        const peerId = roomIdToPeerId(customRoomId);
-        console.log('Inicijalizujem Peer sa room:', customRoomId, '→', peerId);
-        peer = new Peer(peerId, peerOptions);
-    } else {
-        peer = new Peer(peerOptions);
-    }
-
-    peer.on('open', function(id) {
-        myId = id;
-        myData.id = id;
-        console.log('Peer otvorena:', id);
-        if (onOpen) onOpen(id);
-    });
-    peer.on('connection', handleNewConnection);
-    peer.on('error', function(err) {
-        console.error('Peer error:', err.type, err);
-        handlePeerError(err);
-    });
+    return rtc;
 }
 
-function handlePeerError(err) {
-    const createBtn = document.getElementById('createBtn');
-    const joinBtn   = document.getElementById('joinBtn');
-    const createInfo = document.getElementById('createInfo');
-    const joinInfo   = document.getElementById('joinInfo');
-
-    // Clear any pending join timeout to avoid double error messages
-    clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
-
-    // Re-enable buttons
-    if (createBtn) { createBtn.disabled = false; createBtn.textContent = '⚔ KREIRAJ'; }
-    if (joinBtn)   { joinBtn.disabled   = false; joinBtn.textContent   = '→ PRIKLJUČI'; }
-
-    const typeMap = {
-        'unavailable-id'  : '⚠️ Room ID je zauzet — pokušaj ponovo',
-        'invalid-id'      : '⚠️ Neispravan ID sobe',
-        'network'         : '✕ Mrežna greška — provjeri internet konekciju',
-        'peer-unavailable': '✕ Host nije pronađen',
-        'ssl-unavailable' : '✕ SSL greška — pokušaj reload stranice',
-        'server-error'    : '✕ Server nedostupan — pokušaj za nekoliko sekundi',
-        'socket-error'    : '✕ Socket greška — provjeri internet',
-        'socket-closed'   : '✕ Veza prekinuta — pokušaj ponovo',
-    };
-    const msg = typeMap[err.type] || ('✕ Greška: ' + (err.type || err.message || 'nepoznata'));
-
-    if (createInfo) { createInfo.textContent = msg; createInfo.style.color = '#ff1744'; }
-    if (joinInfo)   { joinInfo.textContent   = msg; joinInfo.style.color   = '#ff1744'; }
-
-    // If unavailable-id while creating, auto-retry with a new room code
-    if (err.type === 'unavailable-id' && isHost) {
-        isHost = false;
-        if (createInfo) createInfo.textContent = '↻ Room ID zauzet — generisem novi...';
-        setTimeout(() => createGame(), 600);
+function wireChannel(ch, remoteId) {
+    if (!connectedPlayers[remoteId]) {
+        connectedPlayers[remoteId] = { name: 'Unknown', x:0, y:0, health:100, angle:0, invincible:0, shootCooldown:0 };
     }
+    connectedPlayers[remoteId].channel = ch;
 
-    if (err.type !== 'unavailable-id') { isHost = false; shortRoomId = null; }
-}
-
-function handleNewConnection(conn) {
-    const peerId = conn.peer;
-    if (!connectedPlayers[peerId]) {
-        connectedPlayers[peerId] = {
-            conn: conn,
-            name: 'Unknown',
-            x: 0, y: 0,
-            health: 100,
-            angle: 0,
-            invincible: 0,
-            shootCooldown: 0
-        };
-    } else {
-        connectedPlayers[peerId].conn = conn;
-    }
-    
-    conn.on('open', function() {
-        console.log('Konekcija otvorena sa:', peerId);
-        conn.send({ type: 'playerInfo', data: { name: myData.name, id: myData.id } });
+    ch.onopen = () => {
+        console.log('DataChannel open →', remoteId);
+        clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
+        ch.send(JSON.stringify({ type: 'playerInfo', data: { name: myData.name, id: myPeerId } }));
+        if (!isHost) {
+            const joinBtn = document.getElementById('joinBtn');
+            if (joinBtn) { joinBtn.disabled = false; joinBtn.textContent = '→ PRIKLJUČI'; }
+            showGameRoom(false);
+        }
         if (isHost) updateHostPlayersList();
-    });
-    conn.on('data', function(msg) { handleMessage(msg, peerId); });
-    conn.on('close', function() { delete connectedPlayers[peerId]; updatePlayersList(); if (isHost) updateHostPlayersList(); });
-    conn.on('error', function(err) { console.error('Konekcijska greška:', err); });
+    };
+    ch.onmessage = e => { try { handleMessage(JSON.parse(e.data), remoteId); } catch(_){} };
+    ch.onclose = () => {
+        delete connectedPlayers[remoteId];
+        updatePlayersList();
+        if (isHost) updateHostPlayersList();
+    };
+}
+
+// ── MQTT message router ───────────────────────────────────────────────────
+
+async function onMQTTMessage(topic, buf) {
+    let data; try { data = JSON.parse(buf.toString()); } catch(_) { return; }
+    const parts = topic.split('/');   // ['gg', roomId, type, ...]
+    if (parts[1] !== shortRoomId) return;
+    const type = parts[2];
+
+    if (type === 'join' && isHost) {
+        const clientId = data.clientId;
+        if (connectedPlayers[clientId]?.rtc) return;  // already handling
+
+        const rtc = makeRTC(clientId, false);
+        if (!connectedPlayers[clientId]) connectedPlayers[clientId] = { name:'...', x:0, y:0, health:100, angle:0, invincible:0, shootCooldown:0 };
+        connectedPlayers[clientId].rtc = rtc;
+
+        rtc.ondatachannel = e => wireChannel(e.channel, clientId);
+        mqttSub(`gg/${shortRoomId}/ice/c2h/${clientId}`);
+
+        try {
+            await rtc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await rtc.createAnswer();
+            await rtc.setLocalDescription(answer);
+            mqttPub(`gg/${shortRoomId}/answer/${clientId}`, answer);
+        } catch(e) { console.error('Host SDP error:', e); }
+
+    } else if (type === 'answer' && !isHost) {
+        const rtc = connectedPlayers['host']?.rtc;
+        if (rtc) { try { await rtc.setRemoteDescription(new RTCSessionDescription(data)); } catch(e) { console.error('Client SDP error:', e); } }
+
+    } else if (type === 'ice') {
+        const dir = parts[3], targetId = parts[4];
+        if (isHost && dir === 'c2h') {
+            const rtc = connectedPlayers[targetId]?.rtc;
+            if (rtc) { try { await rtc.addIceCandidate(new RTCIceCandidate(data)); } catch(_){} }
+        } else if (!isHost && dir === 'h2c' && targetId === myPeerId) {
+            const rtc = connectedPlayers['host']?.rtc;
+            if (rtc) { try { await rtc.addIceCandidate(new RTCIceCandidate(data)); } catch(_){} }
+        }
+    }
+}
+
+// ── Create (host) ─────────────────────────────────────────────────────────
+
+function createGame() {
+    const playerName = document.getElementById('playerName').value || 'Player';
+    myData.name = playerName;
+    shortRoomId = generateId(6);
+    myPeerId = generateId(12);
+    myData.id = myPeerId;
+    isHost = true;
+    netActive = true;
+
+    const createBtn  = document.getElementById('createBtn');
+    const createInfo = document.getElementById('createInfo');
+    createBtn.disabled = true;
+    createBtn.textContent = '⏳ KREIRANJE...';
+    createInfo.textContent = '⏳ Spajanje...';
+    createInfo.style.color = '#ffd600';
+
+    mqttConnect(
+        () => {
+            mqttSub(`gg/${shortRoomId}/join`);
+            mqttClient.on('message', onMQTTMessage);
+            createBtn.disabled = false;
+            createBtn.textContent = '⚔ KREIRAJ';
+            createInfo.textContent = '';
+            showGameRoom(true);
+            updateHostPlayersList();
+            console.log('Igra kreirana — Room ID:', shortRoomId);
+        },
+        () => {
+            isHost = false; netActive = false;
+            createBtn.disabled = false;
+            createBtn.textContent = '⚔ KREIRAJ';
+            createInfo.textContent = '✕ Ne mogu da se povežem na signal server';
+            createInfo.style.color = '#ff1744';
+        }
+    );
+}
+
+// ── Join (client) ─────────────────────────────────────────────────────────
+
+function joinGame() {
+    const playerName = document.getElementById('playerName').value || 'Player';
+    const inputId = document.getElementById('roomId').value.trim().toUpperCase();
+
+    if (!inputId) {
+        document.getElementById('joinInfo').textContent = '⚠️ Unesite Room ID!';
+        document.getElementById('joinInfo').style.color = '#ff1744';
+        return;
+    }
+    if (inputId.length !== 6 || !/^[A-Z0-9]{6}$/.test(inputId)) {
+        document.getElementById('joinInfo').textContent = '⚠️ Room ID mora biti 6 karaktera (A-Z, 0-9)!';
+        document.getElementById('joinInfo').style.color = '#ff9800';
+        return;
+    }
+
+    myData.name = playerName;
+    myPeerId = generateId(12);
+    myData.id = myPeerId;
+    shortRoomId = inputId;
+    netActive = true;
+
+    const joinBtn  = document.getElementById('joinBtn');
+    const joinInfo = document.getElementById('joinInfo');
+    joinBtn.disabled = true;
+    joinBtn.textContent = '⏳ SPAJANJE...';
+    joinInfo.textContent = '⏳ Spajanje na server...';
+    joinInfo.style.color = '#ffd600';
+
+    mqttConnect(
+        async () => {
+            joinInfo.textContent = '⏳ Tražim sobu...';
+
+            const rtc = makeRTC('host', true);
+            connectedPlayers['host'] = { name: 'Host', x:0, y:0, health:100, angle:0, invincible:0, shootCooldown:0, rtc };
+
+            const ch = rtc.createDataChannel('game', { ordered: false, maxRetransmits: 0 });
+            wireChannel(ch, 'host');
+
+            mqttSub(`gg/${inputId}/answer/${myPeerId}`);
+            mqttSub(`gg/${inputId}/ice/h2c/${myPeerId}`);
+            mqttClient.on('message', onMQTTMessage);
+
+            try {
+                const offer = await rtc.createOffer();
+                await rtc.setLocalDescription(offer);
+                mqttPub(`gg/${inputId}/join`, { clientId: myPeerId, offer });
+            } catch(e) {
+                console.error('Client offer error:', e);
+                joinBtn.disabled = false; joinBtn.textContent = '→ PRIKLJUČI';
+                joinInfo.textContent = '✕ WebRTC greška: ' + e.message;
+                joinInfo.style.color = '#ff1744';
+                return;
+            }
+
+            joinConnectTimeout = setTimeout(() => {
+                joinConnectTimeout = null;
+                joinBtn.disabled = false; joinBtn.textContent = '→ PRIKLJUČI';
+                joinInfo.textContent = '✕ Host nije dostupan — provjeri kod i internet';
+                joinInfo.style.color = '#ff1744';
+            }, 20000);
+        },
+        () => {
+            netActive = false;
+            joinBtn.disabled = false; joinBtn.textContent = '→ PRIKLJUČI';
+            joinInfo.textContent = '✕ Greška konekcije na signal server';
+            joinInfo.style.color = '#ff1744';
+        }
+    );
 }
 
 function handleMessage(msg, senderId) {
@@ -764,26 +867,25 @@ function handleMessage(msg, senderId) {
 
 function broadcastPlayerState() {
     if (!gameActive) return;
-    const msg = {
+    const msg = JSON.stringify({
         type: 'playerUpdate',
         data: {
             x: player.x, y: player.y,
             health: player.health, angle: player.angle,
             shootCooldown: player.shootCooldown, invincible: player.invincible
         }
-    };
-    for (const peerId in connectedPlayers) {
-        if (connectedPlayers[peerId].conn && connectedPlayers[peerId].conn.open) {
-            connectedPlayers[peerId].conn.send(msg);
-        }
+    });
+    for (const id in connectedPlayers) {
+        const ch = connectedPlayers[id].channel;
+        if (ch?.readyState === 'open') ch.send(msg);
     }
 }
 
 function sendBroadcast(msg) {
-    for (const peerId in connectedPlayers) {
-        if (connectedPlayers[peerId].conn && connectedPlayers[peerId].conn.open) {
-            connectedPlayers[peerId].conn.send(msg);
-        }
+    const s = JSON.stringify(msg);
+    for (const id in connectedPlayers) {
+        const ch = connectedPlayers[id].channel;
+        if (ch?.readyState === 'open') ch.send(s);
     }
 }
 
@@ -815,118 +917,6 @@ function showGameRoom(asHost) {
         roleEl.style.cssText += '; background:rgba(0,230,118,0.1); color:#00e676; border:1px solid #00e676;';
         document.getElementById('gameRoomStatus').textContent = 'Čekaj da host počne igru...';
     }
-}
-
-function createGame() {
-    const playerName = document.getElementById('playerName').value || 'Player';
-    myData.name = playerName;
-    shortRoomId = generateRoomId();
-    isHost = true;
-
-    const createBtn  = document.getElementById('createBtn');
-    const createInfo = document.getElementById('createInfo');
-    createBtn.disabled = true;
-    createBtn.textContent = '⏳ KREIRANJE...';
-    createInfo.textContent = '⏳ Spajanje na server...';
-    createInfo.style.color = '#ffd600';
-
-    initPeer(shortRoomId, function() {
-        createBtn.disabled = false;
-        createBtn.textContent = '⚔ KREIRAJ';
-        createInfo.textContent = '';
-        showGameRoom(true);
-        updateHostPlayersList();
-        console.log('Igra kreirana - Room ID:', shortRoomId);
-    });
-}
-
-function copyToClipboard(text) {
-    if (navigator.clipboard) {
-        navigator.clipboard.writeText(text).then(() => {
-            alert('✓ Room ID kopiran!');
-        }).catch(() => {
-            fallbackCopy(text);
-        });
-    } else {
-        fallbackCopy(text);
-    }
-}
-
-function fallbackCopy(text) {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-    alert('✓ Room ID kopiran!');
-}
-
-function joinGame() {
-    const playerName = document.getElementById('playerName').value || 'Player';
-    const inputId = document.getElementById('roomId').value.trim().toUpperCase();
-    
-    if (!inputId) {
-        document.getElementById('joinInfo').textContent = '⚠️ Unesite Room ID!';
-        document.getElementById('joinInfo').style.color = '#ff1744';
-        return;
-    }
-    
-    if (inputId.length !== 6 || !/^[A-Z0-9]{6}$/.test(inputId)) {
-        document.getElementById('joinInfo').textContent = '⚠️ Room ID mora biti 6 karaktera (A-Z, 0-9)!';
-        document.getElementById('joinInfo').style.color = '#ff9800';
-        return;
-    }
-    
-    myData.name = playerName;
-    document.getElementById('joinInfo').textContent = '⏳ Spajanje na server...';
-    document.getElementById('joinInfo').style.color = '#ffd600';
-
-    const joinBtn = document.getElementById('joinBtn');
-    joinBtn.disabled = true;
-    joinBtn.textContent = '⏳ SPAJANJE...';
-
-    // Klijent dobija nasumičan peer ID, ne isti kao host!
-    initPeer(null, function() {
-        const hostId = roomIdToPeerId(inputId);
-        console.log('Konektujem se na room:', inputId, '→ hostId:', hostId);
-        document.getElementById('joinInfo').textContent = '⏳ Tražim host...';
-
-        const conn = peer.connect(hostId, { reliable: true });
-
-        joinConnectTimeout = setTimeout(() => {
-            joinConnectTimeout = null;
-            joinBtn.disabled = false;
-            joinBtn.textContent = '→ PRIKLJUČI';
-            document.getElementById('joinInfo').textContent = '✗ Host nije dostupan — provjeri da li je host aktivan i kod ispravan';
-            document.getElementById('joinInfo').style.color = '#ff1744';
-            console.error('Timeout - host nije dostupan');
-        }, 15000);
-
-        conn.on('open', function() {
-            clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
-            joinBtn.disabled = false;
-            joinBtn.textContent = '→ PRIKLJUČI';
-            const peerId = conn.peer;
-            connectedPlayers[peerId] = { conn, name: 'Host', x: 0, y: 0, health: 100, angle: 0, invincible: 0, shootCooldown: 0 };
-            conn.send({ type: 'playerInfo', data: { name: myData.name, id: myData.id } });
-            conn.on('data', function(msg) { handleMessage(msg, peerId); });
-            conn.on('close', function() { delete connectedPlayers[peerId]; updatePlayersList(); });
-            conn.on('error', function(err) { console.error('Konekcijska greška:', err); });
-            shortRoomId = inputId;
-            showGameRoom(false);
-            console.log('Uspješna konekcija sa hostom!');
-        });
-
-        conn.on('error', function(err) {
-            clearTimeout(joinConnectTimeout); joinConnectTimeout = null;
-            joinBtn.disabled = false;
-            joinBtn.textContent = '→ PRIKLJUČI';
-            console.error('Konekcijska greška:', err);
-            document.getElementById('joinInfo').textContent = '✗ Greška: ' + (err.message || 'Nije moguće povezati se');
-            document.getElementById('joinInfo').style.color = '#ff1744';
-        });
-    });
 }
 
 function updateHostPlayersList() {
@@ -1023,7 +1013,7 @@ function drawRemotePlayers() {
 
 function initialize() {
     resize();
-    if (!peer || isHost) for (let i = 0; i < 5; i++) spawnZombie();
+    if (!netActive || isHost) for (let i = 0; i < 5; i++) spawnZombie();
 }
 
 // ━━━ GAME CODE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1044,7 +1034,7 @@ const cam = { x: 0, y: 0 };
 function getSpectateData() {
     if (!spectateTarget) return null;
     if (spectateTarget.startsWith('bot_')) {
-        const list = (isHost || !peer) ? bots : remoteBots;
+        const list = (isHost || !netActive) ? bots : remoteBots;
         return list.find(b => b.id === spectateTarget && b.alive) || null;
     }
     return connectedPlayers[spectateTarget] || null;
@@ -1059,7 +1049,7 @@ function updateCam() {
 }
 
 function cycleSpectate() {
-    const botList = (isHost || !peer) ? bots : remoteBots;
+    const botList = (isHost || !netActive) ? bots : remoteBots;
     const targets = [
         ...Object.keys(connectedPlayers),
         ...botList.filter(b => b.alive).map(b => b.id)
@@ -1216,7 +1206,7 @@ function drawOffscreenIndicators() {
         const rp = connectedPlayers[peerId];
         entities.push({ x: rp.x, y: rp.y, name: rp.name || 'Player', color: '#ff6f00' });
     }
-    const botsToDraw = (isHost || !peer) ? bots : remoteBots;
+    const botsToDraw = (isHost || !netActive) ? bots : remoteBots;
     for (const bot of botsToDraw) {
         if (!bot.alive) continue;
         entities.push({ x: bot.x, y: bot.y, name: bot.name, color: '#ce93d8' });
@@ -1279,7 +1269,7 @@ function drawOffscreenIndicators() {
 }
 
 function drawBots() {
-    const botsToDraw = (isHost || !peer) ? bots : remoteBots;
+    const botsToDraw = (isHost || !netActive) ? bots : remoteBots;
     for (const bot of botsToDraw) {
         if (!bot.alive) continue;
         const p = ws(bot.x, bot.y);
@@ -1465,7 +1455,7 @@ function drawGameOver() {
     ctx.fillStyle = '#ffd600'; ctx.font = 'bold 22px monospace';
     const blink = Math.floor(Date.now() / 500) % 2 === 0;
     if (blink) {
-        if (!peer || isHost) {
+        if (!netActive || isHost) {
             ctx.fillText('Press  R  to restart', canvas.width / 2, canvas.height / 2 + 140);
         } else {
             ctx.fillStyle = '#aaa'; ctx.font = 'bold 18px monospace';
@@ -1483,9 +1473,9 @@ function restart() {
     Object.assign(player, { x:0, y:0, health:100, alive:true, shootCooldown:0, invincible:0 });
     Object.assign(game, { score:0, wave:1, zombiesKilled:0, spawnTimer:0, spawnInterval:160, waveTimer:0 });
     bullets = []; zombies = []; particles = []; bloodSplats = []; damagePops = [];
-    if (!peer || isHost) {
+    if (!netActive || isHost) {
         for (let i = 0; i < 5; i++) spawnZombie();
-        if (peer && isHost) sendBroadcast({ type: 'gameRestart' });
+        if (netActive && isHost) sendBroadcast({ type: 'gameRestart' });
     }
     remoteBots = [];
     for (const bot of bots) {
@@ -1501,7 +1491,7 @@ function restart() {
 function update() {
     if (!player.alive) {
         // Auto-assign first available spectate target (player or bot)
-        const botList = (isHost || !peer) ? bots : remoteBots;
+        const botList = (isHost || !netActive) ? bots : remoteBots;
         const allTargets = [
             ...Object.keys(connectedPlayers),
             ...botList.filter(b => b.alive).map(b => b.id)
@@ -1510,7 +1500,7 @@ function update() {
             spectateTarget = allTargets[0];
         }
         // Samo host ili solo igrač mogu restartvati; klijenti čekaju poruku od hosta
-        if (keys['r'] && (!peer || isHost)) restart();
+        if (keys['r'] && (!netActive || isHost)) restart();
         // Igrač je mrtav ali igra se nastavlja (zombiji se nastavljaju za ostale igrače)
     } else {
         let dx = 0, dy = 0;
@@ -1531,7 +1521,7 @@ function update() {
     updateCam();
     
     // Spawn/wave logic — samo host (ili solo igra)
-    if (!peer || isHost) {
+    if (!netActive || isHost) {
         game.spawnTimer++;
         if (game.spawnTimer >= game.spawnInterval) {
             game.spawnTimer = 0;
@@ -1554,7 +1544,7 @@ function update() {
         const z = zombies[zi];
         
         // Kretanje zombija — samo host, kreće se ka najbližem živom igraču/botu
-        if (!peer || isHost) {
+        if (!netActive || isHost) {
             let targetX = null, targetY = null, minD2 = Infinity;
 
             // Lokalni igrač (samo ako je živ)
@@ -1609,7 +1599,7 @@ function update() {
                 for (let pi = 0; pi < 10; pi++) {
                     particles.push({ x: z.x, y: z.y, vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6, life: 25 + Math.random() * 20, maxLife: 45, color: '#b71c1c', size: 2 + Math.random() * 3 });
                 }
-                if (!peer || isHost) {
+                if (!netActive || isHost) {
                     // Host direktno primjenjuje štetu
                     z.health -= b.damage;
                     if (z.health <= 0) {
@@ -1637,7 +1627,7 @@ function update() {
     }
 
     // Update bots (host/solo only)
-    if (!peer || isHost) updateBots();
+    if (!netActive || isHost) updateBots();
     
     for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
@@ -1688,7 +1678,7 @@ function drawSpectate() {
     ctx.fillStyle = labelColor; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'center';
     ctx.fillText('👁 PRATIŠ: ' + prefix + name + '   |   TAB — sledeći', canvas.width / 2, 34);
     // Bottom: R to restart (host only)
-    if (!peer || isHost) {
+    if (!netActive || isHost) {
         const blink = Math.floor(Date.now() / 500) % 2 === 0;
         if (blink) {
             ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, canvas.height - 44, canvas.width, 44);
